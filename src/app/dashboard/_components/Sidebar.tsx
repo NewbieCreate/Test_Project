@@ -4,16 +4,41 @@ import React from "react";
 
 interface SidebarProps {
   isOpen: boolean;
+  onToggle: () => void;
 }
 
-export function Sidebar({ isOpen }: SidebarProps) {
+export function Sidebar({ isOpen, onToggle }: SidebarProps) {
   return (
     <aside
-      className={`bg-gray-800 w-64 min-h-screen transition-all duration-300 ${
-        isOpen ? "translate-x-0" : "-translate-x-full"
+      className={`bg-gray-800 min-h-screen transition-all duration-300 overflow-hidden ${
+        isOpen ? "w-64" : "w-0"
       }`}
     >
-      <div className="p-4 space-y-6">
+      <div className="p-4 space-y-6 w-64">
+        {/* Header with close button */}
+        <div className="flex items-center justify-between">
+          <h2 className="text-white text-lg font-semibold">메뉴</h2>
+          <button
+            onClick={onToggle}
+            className="text-gray-400 hover:text-white p-1 rounded transition-colors"
+            aria-label="사이드바 닫기"
+          >
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </button>
+        </div>
+
         {/* Search Bar */}
         <div className="relative">
           <svg
@@ -41,14 +66,16 @@ export function Sidebar({ isOpen }: SidebarProps) {
           <div className="bg-blue-600 text-white px-3 py-2 rounded-lg text-sm font-medium">
             ① 최근 항목
           </div>
-          <div className="text-gray-300 px-3 py-2 text-sm">템플릿 및 도구</div>
+          <div className="text-gray-300 px-3 py-2 text-sm hover:bg-gray-700 rounded cursor-pointer">
+            템플릿 및 도구
+          </div>
         </nav>
 
         {/* Team/Project Sections */}
         <div className="space-y-3">
-          <div className="flex items-center space-x-2 text-gray-300 text-sm">
+          <div className="flex items-center space-x-2 text-gray-300 text-sm px-3 py-2 hover:bg-gray-700 rounded cursor-pointer">
             <svg
-              className="w-4 h-4"
+              className="w-4 h-4 flex-shrink-0"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -60,11 +87,14 @@ export function Sidebar({ isOpen }: SidebarProps) {
                 d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
               />
             </svg>
-            <span>나중에 공유된 친구 파일 볼 수 있는곳</span>
+            <span className="truncate">
+              나중에 공유된 친구 파일 볼 수 있는곳
+            </span>
           </div>
+
           <div className="flex items-center space-x-2 text-gray-300 text-sm px-3 py-2 hover:bg-gray-700 rounded cursor-pointer">
             <svg
-              className="w-4 h-4"
+              className="w-4 h-4 flex-shrink-0"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -78,9 +108,10 @@ export function Sidebar({ isOpen }: SidebarProps) {
             </svg>
             <span>모든 공유 프로젝트</span>
           </div>
+
           <div className="flex items-center space-x-2 text-gray-300 text-sm px-3 py-2 hover:bg-gray-700 rounded cursor-pointer">
             <svg
-              className="w-4 h-4"
+              className="w-4 h-4 flex-shrink-0"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -98,7 +129,12 @@ export function Sidebar({ isOpen }: SidebarProps) {
 
         {/* Favorites */}
         <div>
-          <h3 className="text-gray-300 text-sm font-medium mb-2">즐겨찾기</h3>
+          <h3 className="text-gray-300 text-sm font-medium mb-2 px-3">
+            즐겨찾기
+          </h3>
+          <div className="text-gray-400 text-xs px-3 py-2">
+            아직 즐겨찾기한 항목이 없습니다
+          </div>
         </div>
       </div>
     </aside>
