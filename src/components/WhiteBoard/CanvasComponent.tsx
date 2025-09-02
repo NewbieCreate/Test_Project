@@ -1,42 +1,44 @@
 //CanvasComponent.tsx
 "use client";
 
-import React, { useRef, useEffect, useState } from "react";
+import React, { useRef, useEffect, useState, useCallback } from "react";
 import Konva from "konva";
 
-// Shape 타입
-interface Shape {
-  id: string;
-  type: "rectangle" | "circle" | "triangle" | "star" | "arrow";
-  x: number;
-  y: number;
-  width?: number;
-  height?: number;
-  radius?: number;
-  fill: string;
-  stroke: string;
-  strokeWidth: number;
-  rotation?: number;
-  draggable?: boolean;
-}
+import { Shape, Lines, SelectionBox, Tool } from "./types";
 
-// Lines 타입
-interface Lines {
-  x: number;
-  y: number;
-  stroke: string;
-  strokeWidth: number;
-  mode: string;
-}
+// 상수 정의
+const CONSTANTS = {
+  CANVAS: {
+    DEFAULT_WIDTH: 800,
+    DEFAULT_HEIGHT: 600,
+    MIN_SHAPE_SIZE: 20,
+    MIN_LINE_SIZE: 10,
+    MIN_SELECTION_SIZE: 5,
+    PDF_SCALE_FACTOR: 0.8,
+  },
+  COLORS: {
+    SELECTION: "#2196f3",
+    SELECTION_FILL: "#e3f2fd",
+    LINE_TRANSFORMER: "#ff6b35",
+    WHITE: "#ffffff",
+    SELECTION_BOX: "#0096fd",
+    SELECTION_BOX_FILL: "rgba(0, 150, 253, 0.1)",
+  },
+  SIZES: {
+    SHAPE_ANCHOR: 8,
+    LINE_ANCHOR: 6,
+    SHAPE_STROKE: 3,
+    LINE_STROKE: 2,
+    SELECTION_STROKE: 1,
+  },
+  OFFSETS: {
+    SHAPE_ROTATE: 30,
+    LINE_ROTATE: 25,
+  },
+  DASH_PATTERN: [5, 5] as number[],
+} as const;
 
-// 선택 박스 타입
-interface SelectionBox {
-  startX: number;
-  startY: number;
-  endX: number;
-  endY: number;
-}
-
+// 타입 정의
 interface CanvasComponentProps {
   lines: Lines[][];
   currentLine: Lines[];
@@ -44,7 +46,7 @@ interface CanvasComponentProps {
   selectedShapeIds: string[];
   selectedLineIds: string[];
   selectionBox: SelectionBox | null;
-  tool: "pen" | "eraser" | "select";
+  tool: Tool;
   brushColor: string;
   brushSize: number;
   pdfPages: HTMLImageElement[];
@@ -58,6 +60,7 @@ interface CanvasComponentProps {
     e: Konva.KonvaEventObject<MouseEvent>
   ) => void;
   onLineClick: (lineId: string, e: Konva.KonvaEventObject<MouseEvent>) => void;
+  onLineDragEnd: (lineId: string, x: number, y: number) => void;
   onShapeDragEnd: (shapeId: string, x: number, y: number) => void;
   onShapeTransformEnd: (
     shapeId: string,
@@ -67,9 +70,24 @@ interface CanvasComponentProps {
     height: number,
     rotation: number
   ) => void;
-  onSelectionBoxChange: (box: SelectionBox | null) => void;
+  onLineTransformEnd: (
+    lineId: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    rotation: number
+  ) => void;
+  onClearSelection: () => void;
   onPdfImageChange: (image: HTMLImageElement | null) => void;
 }
+
+type NodeType = "line" | "shape";
+type EventHandlers = {
+  click: (e: Konva.KonvaEventObject<MouseEvent>) => void;
+  dragend: (node: Konva.Shape) => void;
+  transformend: (node: Konva.Shape) => void;
+};
 
 const CanvasComponent: React.FC<CanvasComponentProps> = ({
   lines,
@@ -79,6 +97,8 @@ const CanvasComponent: React.FC<CanvasComponentProps> = ({
   selectedLineIds,
   selectionBox,
   tool,
+  brushColor,
+  brushSize,
   pdfPages,
   currentPage,
   pdfOffset,
@@ -87,471 +107,493 @@ const CanvasComponent: React.FC<CanvasComponentProps> = ({
   onMouseUp,
   onShapeClick,
   onLineClick,
+  onLineDragEnd,
   onShapeDragEnd,
   onShapeTransformEnd,
+  onLineTransformEnd,
+  onClearSelection,
   onPdfImageChange,
 }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
+  // Refs
   const stageRef = useRef<Konva.Stage | null>(null);
   const layerRef = useRef<Konva.Layer | null>(null);
   const transformerRef = useRef<Konva.Transformer | null>(null);
+  const lineTransformerRef = useRef<Konva.Transformer | null>(null);
+
+  // State
   const [isClient, setIsClient] = useState(false);
+  const [isStageReady, setIsStageReady] = useState(false);
+  const [isContainerMounted, setIsContainerMounted] = useState(false);
 
-  // Konva Stage 초기화
-  useEffect(() => {
-    setIsClient(true);
-    if (!containerRef.current) return;
+  // Styling functions
+  const applySelectionStyle = useCallback(
+    (node: Konva.Shape, isSelected: boolean, baseStrokeWidth: number) => {
+      if (!isSelected) return;
 
-    // 기존 Stage 제거
-    if (stageRef.current) {
-      stageRef.current.destroy();
-    }
+      node.stroke(CONSTANTS.COLORS.SELECTION);
+      if (node instanceof Konva.Line) {
+        node.strokeWidth(baseStrokeWidth + CONSTANTS.SIZES.LINE_STROKE);
+      } else {
+        node.strokeWidth(CONSTANTS.SIZES.LINE_STROKE);
+      }
+    },
+    []
+  );
 
-    const stage = new Konva.Stage({
-      container: containerRef.current,
-      width: window.innerWidth - 40,
-      height: window.innerHeight - 120,
-    });
+  // Event handler creation
+  const createEventHandlers = useCallback(
+    (nodeId: string, nodeType: NodeType): EventHandlers => ({
+      click: (e: Konva.KonvaEventObject<MouseEvent>) => {
+        e.cancelBubble = true;
+        if (tool !== "select") return;
 
-    const layer = new Konva.Layer();
-    stage.add(layer);
-
-    // Transformer 생성
-    const transformer = new Konva.Transformer({
-      rotateEnabled: true,
-      resizeEnabled: true,
-      keepRatio: false,
-      boundBoxFunc: (oldBox, newBox) => {
-        if (newBox.width < 20 || newBox.height < 20) {
-          return oldBox;
+        if (nodeType === "line") {
+          onLineClick(nodeId, e);
+        } else {
+          onShapeClick(nodeId, e);
         }
-        return newBox;
       },
-    });
-    layer.add(transformer);
 
-    stageRef.current = stage;
-    layerRef.current = layer;
-    transformerRef.current = transformer;
+      dragend: (node: Konva.Shape) => {
+        if (nodeType === "line") {
+          onLineDragEnd(nodeId, node.x(), node.y());
+          if (tool === "select") {
+            node.x(0);
+            node.y(0);
+          }
+        } else {
+          onShapeDragEnd(nodeId, node.x(), node.y());
+        }
+      },
 
-    // 리사이즈 이벤트
-    const handleResize = () => {
-      stage.width(window.innerWidth - 40);
-      stage.height(window.innerHeight - 120);
-      stage.batchDraw();
+      transformend: (node: Konva.Shape) => {
+        const x = node.x();
+        const y = node.y();
+        const width = node.width() * node.scaleX();
+        const height = node.height() * node.scaleY();
+        const rotation = node.rotation();
+
+        if (nodeType === "line") {
+          onLineTransformEnd(nodeId, x, y, width, height, rotation);
+        } else {
+          onShapeTransformEnd(nodeId, x, y, width, height, rotation);
+        }
+      },
+    }),
+    [
+      tool,
+      onLineClick,
+      onShapeClick,
+      onLineDragEnd,
+      onShapeDragEnd,
+      onLineTransformEnd,
+      onShapeTransformEnd,
+    ]
+  );
+
+  const addEventHandlers = useCallback(
+    (node: Konva.Shape, nodeId: string, nodeType: NodeType) => {
+      const handlers = createEventHandlers(nodeId, nodeType);
+
+      node.on("click", handlers.click);
+      node.on("dragend", () => handlers.dragend(node));
+      node.on("transformend", () => handlers.transformend(node));
+    },
+    [createEventHandlers]
+  );
+
+  // Konva node creation
+  const createKonvaCircle = useCallback(
+    (config: Konva.CircleConfig, isSelected: boolean) => {
+      const circle = new Konva.Circle(config);
+      applySelectionStyle(circle, isSelected, config.radius! * 2);
+      return circle;
+    },
+    [applySelectionStyle]
+  );
+
+  const createKonvaLine = useCallback(
+    (config: Konva.LineConfig, isSelected: boolean) => {
+      const line = new Konva.Line(config);
+      applySelectionStyle(line, isSelected, config.strokeWidth!);
+      return line;
+    },
+    [applySelectionStyle]
+  );
+
+  const createShapeNode = useCallback((shape: Shape, isSelected: boolean) => {
+    const baseConfig = {
+      name: "shape",
+      id: shape.id,
+      x: shape.x,
+      y: shape.y,
+      fill: isSelected ? CONSTANTS.COLORS.SELECTION_FILL : shape.fill,
+      stroke: isSelected ? CONSTANTS.COLORS.SELECTION : shape.stroke,
+      strokeWidth: isSelected
+        ? CONSTANTS.SIZES.SHAPE_STROKE
+        : shape.strokeWidth,
+      rotation: shape.rotation,
     };
 
-    window.addEventListener("resize", handleResize);
-
-    return () => {
-      window.removeEventListener("resize", handleResize);
-      stage.destroy();
-    };
+    switch (shape.type) {
+      case "rectangle":
+        return new Konva.Rect({
+          ...baseConfig,
+          width: shape.width ?? 100,
+          height: shape.height ?? 100,
+        });
+      case "circle":
+        return new Konva.Circle({
+          ...baseConfig,
+          radius: shape.radius ?? 50,
+        });
+      case "triangle":
+        return new Konva.RegularPolygon({
+          ...baseConfig,
+          sides: 3,
+          radius: shape.radius ?? 50,
+        });
+      case "star":
+        return new Konva.Star({
+          ...baseConfig,
+          numPoints: 5,
+          innerRadius: (shape.radius ?? 50) * 0.5,
+          outerRadius: shape.radius ?? 50,
+        });
+      default:
+        return null;
+    }
   }, []);
 
-  // 라인 렌더링
-  useEffect(() => {
-    if (!layerRef.current || !isClient) return;
+  // Rendering functions
+  const renderLine = useCallback(
+    (line: Lines[], lineIndex: number) => {
+      if (line.length < 1) return null;
 
-    // 기존 라인 제거
-    layerRef.current.find(".drawing-line").forEach((line) => line.destroy());
-    layerRef.current.find(".current-line").forEach((line) => line.destroy());
-
-    // 완성된 선 그리기
-    lines.forEach((line, lineIndex) => {
-      if (line.length === 0) return;
-
-      // 고정된 ID 생성 (인덱스 기반)
       const lineId = `line-${lineIndex}`;
+      const stroke = line[0]?.stroke || brushColor;
+      const strokeWidth = line[0]?.strokeWidth || brushSize;
+      const isSelected = selectedLineIds.includes(lineId);
+      const isEraser = line[0]?.mode === "eraser";
 
-      const konvaLine = new Konva.Line({
-        name: "drawing-line",
-        id: lineId,
-        points: line.flatMap((p) => [p.x, p.y]),
-        stroke: line[0]?.stroke || "#000000",
-        strokeWidth: line[0]?.strokeWidth || 5,
-        tension: 0.5,
-        lineCap: "round",
-        lineJoin: "round",
-        globalCompositeOperation:
-          line[0]?.mode === "eraser" ? "destination-out" : "source-over",
-        draggable: tool === "select" && selectedLineIds.includes(lineId), // 선택된 선만 드래그 가능
-      });
+      console.log(
+        `[DEBUG] Creating line with stroke: ${stroke}, strokeWidth: ${strokeWidth}`
+      );
 
-      // 선택된 선 스타일 적용
-      if (selectedLineIds.includes(lineId)) {
-        konvaLine.stroke("#2196f3");
-        konvaLine.strokeWidth((line[0]?.strokeWidth || 5) + 2);
+      // Single point rendering
+      if (line.length === 1) {
+        const point = line[0];
+        const konvaCircle = createKonvaCircle(
+          {
+            name: "drawing-line",
+            id: lineId,
+            x: point.x,
+            y: point.y,
+            radius: strokeWidth / 2,
+            fill: stroke,
+            globalCompositeOperation: isEraser
+              ? "destination-out"
+              : "source-over",
+            draggable: tool === "select" && isSelected,
+          },
+          isSelected
+        );
+
+        addEventHandlers(konvaCircle, lineId, "line");
+        console.log(
+          `[DEBUG] Rendered single point line ${lineId}, selected: ${isSelected}, draggable: ${
+            tool === "select" && isSelected
+          }`
+        );
+        return konvaCircle;
       }
 
-      // 선 클릭 이벤트 추가
-      konvaLine.on("click", (e) => {
-        e.cancelBubble = true;
-        console.log("Line clicked:", konvaLine.id());
-        onLineClick(konvaLine.id(), e);
-      });
+      // Multiple points rendering
+      const konvaLine = createKonvaLine(
+        {
+          name: "drawing-line",
+          id: lineId,
+          points: line.flatMap((p) => [p.x, p.y]),
+          stroke,
+          strokeWidth,
+          tension: 0.5,
+          lineCap: "round",
+          lineJoin: "round",
+          globalCompositeOperation: isEraser
+            ? "destination-out"
+            : "source-over",
+          draggable: tool === "select" && isSelected,
+        },
+        isSelected
+      );
 
-      // 선 드래그 완료 이벤트
-      konvaLine.on("dragend", () => {
-        console.log("Line dragged to:", konvaLine.x(), konvaLine.y());
-        // 드래그 후 위치 초기화 (선택 모드에서만)
-        if (tool === "select") {
-          konvaLine.x(0);
-          konvaLine.y(0);
-        }
-      });
+      addEventHandlers(konvaLine, lineId, "line");
+      return konvaLine;
+    },
+    [
+      brushColor,
+      brushSize,
+      selectedLineIds,
+      tool,
+      createKonvaCircle,
+      createKonvaLine,
+      addEventHandlers,
+    ]
+  );
 
-      // 선 변환 완료 이벤트 (리사이즈, 회전)
-      konvaLine.on("transformend", () => {
-        console.log("Line transformed:", konvaLine.id());
-        // 여기서 선 변환 정보를 업데이트할 수 있습니다
-      });
+  const renderShape = useCallback(
+    (shape: Shape) => {
+      const isSelected = selectedShapeIds.includes(shape.id);
+      const konvaShape = createShapeNode(shape, isSelected);
 
-      layerRef.current!.add(konvaLine);
+      if (konvaShape) {
+        konvaShape.draggable(tool === "select");
+        addEventHandlers(konvaShape, shape.id, "shape");
+        return konvaShape;
+      }
+
+      return null;
+    },
+    [selectedShapeIds, tool, createShapeNode, addEventHandlers]
+  );
+
+  // Transformer management
+  const connectTransformer = useCallback(
+    (transformer: Konva.Transformer, selectedIds: string[]) => {
+      if (!layerRef.current) return;
+
+      const selectedNodes = selectedIds
+        .map((id) => layerRef.current!.findOne(`#${id}`))
+        .filter(
+          (node): node is Konva.Node => node !== undefined && node !== null
+        );
+
+      transformer.nodes(selectedNodes);
+      if (selectedNodes.length > 0) {
+        layerRef.current.batchDraw();
+      }
+    },
+    []
+  );
+
+  const updateDraggableState = useCallback(() => {
+    if (!layerRef.current) return;
+
+    // Update shape draggable state
+    const allShapes = layerRef.current.find(".shape");
+    allShapes.forEach((shape) => {
+      shape.draggable(tool === "select");
     });
 
-    // 현재 그리는 라인 그리기
-    if (currentLine.length > 0) {
-      const points = currentLine.flatMap((p) => [p.x, p.y]);
+    // Update line draggable state
+    const allLines = layerRef.current.find(".drawing-line");
+    const currentLines = layerRef.current.find(".current-line");
 
-      // 현재 선용 고정 ID
-      const currentLineId = "current-line";
+    [...allLines, ...currentLines].forEach((line) => {
+      const isSelected = selectedLineIds.includes(line.id());
+      line.draggable(tool === "select" && isSelected);
+    });
+  }, [tool, selectedShapeIds, selectedLineIds]);
 
-      const currentKonvaLine = new Konva.Line({
-        name: "current-line",
-        id: currentLineId,
-        points,
-        stroke: currentLine[0]?.stroke || "#000000",
-        strokeWidth: currentLine[0]?.strokeWidth || 5,
-        tension: 0.5,
-        lineCap: "round",
-        lineJoin: "round",
-        globalCompositeOperation:
-          currentLine[0]?.mode === "eraser" ? "destination-out" : "source-over",
-        draggable: tool === "select" && selectedLineIds.includes(currentLineId), // 선택된 선만 드래그 가능
+  // Rendering effects
+  useEffect(() => {
+    if (
+      !layerRef.current ||
+      !isClient ||
+      !isStageReady ||
+      !isContainerMounted
+    ) {
+      console.log("[DEBUG] Rendering lines - not ready:", {
+        hasLayer: !!layerRef.current,
+        isClient,
+        isStageReady,
+        isContainerMounted,
       });
+      return;
+    }
 
-      // 현재 선 선택 상태 확인 및 스타일 적용
-      const isCurrentLineSelected = selectedLineIds.includes(currentLineId);
-      if (isCurrentLineSelected) {
-        currentKonvaLine.stroke("#2196f3");
-        currentKonvaLine.strokeWidth((currentLine[0]?.strokeWidth || 5) + 2);
+    console.log("[DEBUG] Rendering lines started");
+
+    // Clear existing lines
+    const existingLines = layerRef.current.find(".drawing-line, .current-line");
+    existingLines.forEach((line) => line.destroy());
+
+    // Render completed lines
+    lines.forEach((line, lineIndex) => {
+      const konvaNode = renderLine(line, lineIndex);
+      if (konvaNode) {
+        layerRef.current!.add(konvaNode);
       }
+    });
 
-      // 현재 선 이벤트
-      currentKonvaLine.on("click", (e) => {
-        e.cancelBubble = true;
-        onLineClick(currentLineId, e);
-      });
-
-      // 현재 선 드래그 완료 이벤트
-      currentKonvaLine.on("dragend", () => {
-        console.log(
-          "Current line dragged:",
-          currentKonvaLine.x(),
-          currentKonvaLine.y()
-        );
-        // 드래그 후 위치 초기화 (선택 모드에서만)
-        if (tool === "select") {
-          currentKonvaLine.x(0);
-          currentKonvaLine.y(0);
-        }
-      });
-
-      currentKonvaLine.on("transformend", () => {
-        console.log("Current line transformed:", currentKonvaLine.id());
-      });
-
-      layerRef.current!.add(currentKonvaLine);
+    // Render current line
+    if (currentLine.length > 0) {
+      const konvaNode = renderLine(currentLine, -1);
+      if (konvaNode) {
+        konvaNode.name("current-line");
+        layerRef.current!.add(konvaNode);
+      }
     }
 
     layerRef.current.batchDraw();
-  }, [lines, currentLine, selectedLineIds, isClient, onLineClick, tool]);
+    console.log("[DEBUG] Lines rendering completed");
+  }, [
+    lines,
+    currentLine,
+    isClient,
+    isStageReady,
+    isContainerMounted,
+    renderLine,
+  ]);
 
-  // Stage 이벤트 핸들러
   useEffect(() => {
-    if (!stageRef.current) return;
+    if (!layerRef.current || !isClient || !isStageReady || !isContainerMounted)
+      return;
 
-    const stage = stageRef.current;
+    console.log("[DEBUG] Rendering shapes started");
 
-    // Stage에 모든 마우스 이벤트 바인딩
-    stage.on("mousedown", (e) => {
-      console.log("Stage mousedown event:", {
-        target: e.target.name(),
-        tool,
-        pos: stage.getPointerPosition(),
-      });
-      onMouseDown(e);
-    });
+    // Clear existing shapes
+    const existingShapes = layerRef.current.find(".shape");
+    existingShapes.forEach((shape) => shape.destroy());
 
-    stage.on("mousemove", (e) => {
-      console.log("Stage mousemove event:", {
-        target: e.target.name(),
-        tool,
-        pos: stage.getPointerPosition(),
-      });
-      onMouseMove(e);
-    });
-
-    stage.on("mouseup", () => {
-      console.log("Stage mouseup event:", { tool });
-      onMouseUp();
-    });
-
-    return () => {
-      stage.off("mousedown");
-      stage.off("mousemove");
-      stage.off("mouseup");
-    };
-  }, [onMouseDown, onMouseMove, onMouseUp, tool]);
-
-  // 도형 렌더링
-  useEffect(() => {
-    if (!layerRef.current || !isClient) return;
-
-    // 기존 도형 제거
-    layerRef.current.find(".shape").forEach((shape) => shape.destroy());
-
+    // Render shapes
     shapes.forEach((shape) => {
-      let konvaShape: Konva.Shape | null = null;
-
-      switch (shape.type) {
-        case "rectangle":
-          konvaShape = new Konva.Rect({
-            name: "shape",
-            id: shape.id,
-            x: shape.x,
-            y: shape.y,
-            width: shape.width ?? 100,
-            height: shape.height ?? 100,
-            fill: selectedShapeIds.includes(shape.id) ? "#e3f2fd" : shape.fill,
-            stroke: selectedShapeIds.includes(shape.id)
-              ? "#2196f3"
-              : shape.stroke,
-            strokeWidth: selectedShapeIds.includes(shape.id)
-              ? 3
-              : shape.strokeWidth,
-            rotation: shape.rotation,
-          });
-          break;
-        case "circle":
-          konvaShape = new Konva.Circle({
-            name: "shape",
-            id: shape.id,
-            x: shape.x,
-            y: shape.y,
-            radius: shape.radius ?? 50,
-            fill: selectedShapeIds.includes(shape.id) ? "#e3f2fd" : shape.fill,
-            stroke: selectedShapeIds.includes(shape.id)
-              ? "#2196f3"
-              : shape.stroke,
-            strokeWidth: selectedShapeIds.includes(shape.id)
-              ? 3
-              : shape.strokeWidth,
-            rotation: shape.rotation,
-          });
-          break;
-        case "triangle":
-          konvaShape = new Konva.RegularPolygon({
-            name: "shape",
-            id: shape.id,
-            x: shape.x,
-            y: shape.y,
-            sides: 3,
-            radius: shape.radius ?? 50,
-            fill: selectedShapeIds.includes(shape.id) ? "#e3f2fd" : shape.fill,
-            stroke: selectedShapeIds.includes(shape.id)
-              ? "#2196f3"
-              : shape.stroke,
-            strokeWidth: selectedShapeIds.includes(shape.id)
-              ? 3
-              : shape.strokeWidth,
-            rotation: shape.rotation,
-          });
-          break;
-        case "star":
-          konvaShape = new Konva.Star({
-            name: "shape",
-            id: shape.id,
-            x: shape.x,
-            y: shape.y,
-            numPoints: 5,
-            innerRadius: (shape.radius ?? 50) * 0.5,
-            outerRadius: shape.radius ?? 50,
-            fill: selectedShapeIds.includes(shape.id) ? "#e3f2fd" : shape.fill,
-            stroke: selectedShapeIds.includes(shape.id)
-              ? "#2196f3"
-              : shape.stroke,
-            strokeWidth: selectedShapeIds.includes(shape.id)
-              ? 3
-              : shape.strokeWidth,
-            rotation: shape.rotation,
-          });
-          break;
-      }
-
+      const konvaShape = renderShape(shape);
       if (konvaShape) {
-        // 도형 클릭 이벤트
-        konvaShape.on("click", (e) => {
-          e.cancelBubble = true; // 이벤트 버블링 방지
-          console.log("Shape clicked in Canvas:", shape.id);
-          onShapeClick(shape.id, e);
-        });
-
-        // 도형 변환 완료 이벤트 (리사이즈, 회전)
-        konvaShape.on("transformend", () => {
-          onShapeTransformEnd(
-            shape.id,
-            konvaShape.x(),
-            konvaShape.y(),
-            konvaShape.width() * konvaShape.scaleX(),
-            konvaShape.height() * konvaShape.scaleY(),
-            konvaShape.rotation()
-          );
-        });
-
-        // 선택 모드에서만 드래그 가능하게 설정
-        konvaShape.draggable(tool === "select");
-
-        // 도형 드래그 완료 이벤트
-        konvaShape.on("dragend", () => {
-          onShapeDragEnd(shape.id, konvaShape.x(), konvaShape.y());
-        });
-
         layerRef.current!.add(konvaShape);
       }
     });
 
     layerRef.current.batchDraw();
+    console.log("[DEBUG] Shapes rendering completed");
+  }, [shapes, isClient, isStageReady, isContainerMounted, renderShape]);
+
+  // Transformer effects
+  useEffect(() => {
+    if (!transformerRef.current || !isStageReady || !isContainerMounted) return;
+
+    console.log("[DEBUG] Connecting shape transformer to:", selectedShapeIds);
+    connectTransformer(transformerRef.current, selectedShapeIds);
+  }, [selectedShapeIds, connectTransformer, isStageReady, isContainerMounted]);
+
+  useEffect(() => {
+    if (!lineTransformerRef.current || !isStageReady || !isContainerMounted)
+      return;
+
+    console.log("[DEBUG] Connecting line transformer to:", selectedLineIds);
+    connectTransformer(lineTransformerRef.current, selectedLineIds);
+  }, [selectedLineIds, connectTransformer, isStageReady, isContainerMounted]);
+
+  useEffect(() => {
+    if (!isStageReady || !isContainerMounted) return;
+    updateDraggableState();
+  }, [updateDraggableState, isStageReady]);
+
+  // Update draggable state when tool changes
+  useEffect(() => {
+    if (!layerRef.current || !isStageReady) return;
+
+    console.log(
+      "[DEBUG] Updating draggable state due to tool/selection change"
+    );
+    updateDraggableState();
   }, [
-    shapes,
-    selectedShapeIds,
     tool,
-    isClient,
-    onShapeClick,
-    onShapeTransformEnd,
-    onShapeDragEnd,
+    selectedShapeIds,
+    selectedLineIds,
+    isStageReady,
+    updateDraggableState,
   ]);
 
-  // 선택된 도형들에 Transformer 연결
+  // Selection box rendering
   useEffect(() => {
-    if (!transformerRef.current || !layerRef.current) return;
+    if (!layerRef.current || !isClient || !isStageReady || !isContainerMounted)
+      return;
 
-    const selectedNodes = selectedShapeIds
-      .map((id) => layerRef.current!.findOne(`#${id}`))
-      .filter((node) => node !== undefined);
+    // Clear existing selection boxes
+    const existingBoxes = layerRef.current.find(".selection-box");
+    existingBoxes.forEach((box) => box.destroy());
 
-    // 선택된 선들도 Transformer에 추가
-    const selectedLineNodes = selectedLineIds
-      .map((id) => layerRef.current!.findOne(`#${id}`))
-      .filter((node) => node !== undefined);
+    if (!selectionBox) return;
 
-    const allSelectedNodes = [...selectedNodes, ...selectedLineNodes];
+    const x = Math.min(selectionBox.startX, selectionBox.endX);
+    const y = Math.min(selectionBox.startY, selectionBox.endY);
+    const width = Math.abs(selectionBox.endX - selectionBox.startX);
+    const height = Math.abs(selectionBox.endY - selectionBox.startY);
 
-    console.log("Connecting transformer to nodes:", allSelectedNodes.length);
-    transformerRef.current.nodes(allSelectedNodes);
+    if (
+      width <= CONSTANTS.CANVAS.MIN_SELECTION_SIZE ||
+      height <= CONSTANTS.CANVAS.MIN_SELECTION_SIZE
+    )
+      return;
+
+    const selectionRect = new Konva.Rect({
+      name: "selection-box",
+      x,
+      y,
+      width,
+      height,
+      stroke: CONSTANTS.COLORS.SELECTION_BOX,
+      strokeWidth: CONSTANTS.SIZES.SELECTION_STROKE,
+      dash: CONSTANTS.DASH_PATTERN,
+      fill: CONSTANTS.COLORS.SELECTION_BOX_FILL,
+    });
+
+    selectionRect.on("click", () => {
+      if (tool !== "select") return;
+      onClearSelection();
+    });
+
+    layerRef.current.add(selectionRect);
     layerRef.current.batchDraw();
-  }, [selectedShapeIds, selectedLineIds]);
+  }, [
+    selectionBox,
+    isClient,
+    isStageReady,
+    isContainerMounted,
+    tool,
+    onClearSelection,
+  ]);
 
-  // 선택 모드일 때만 드래그 활성화
+  // PDF rendering
   useEffect(() => {
-    if (!layerRef.current) return;
-
-    // 모든 도형과 선의 드래그 상태 업데이트
-    const allShapes = layerRef.current.find(".shape");
-    const allLines = layerRef.current.find(".drawing-line");
-    const currentLines = layerRef.current.find(".current-line");
-
-    allShapes.forEach((shape) => {
-      const isSelected = selectedShapeIds.includes(shape.id());
-      shape.draggable(tool === "select" && isSelected);
-    });
-
-    allLines.forEach((line) => {
-      const isSelected = selectedLineIds.includes(line.id());
-      line.draggable(tool === "select" && isSelected);
-    });
-
-    // 현재 그리는 선도 드래그 상태 업데이트
-    currentLines.forEach((line) => {
-      const isSelected = selectedLineIds.includes(line.id());
-      line.draggable(tool === "select" && isSelected);
-    });
-
-    console.log("Drag states updated:", {
-      tool,
-      selectedShapes: selectedShapeIds.length,
-      selectedLines: selectedLineIds.length,
-    });
-  }, [tool, selectedShapeIds, selectedLineIds]);
-
-  // 선택 박스 렌더링
-  useEffect(() => {
-    if (!layerRef.current || !isClient) return;
-
-    // 기존 선택 박스 제거
-    layerRef.current.find(".selection-box").forEach((box) => box.destroy());
-
-    // 선택 박스가 있을 때만 렌더링
-    if (selectionBox) {
-      const x = Math.min(selectionBox.startX, selectionBox.endX);
-      const y = Math.min(selectionBox.startY, selectionBox.endY);
-      const width = Math.abs(selectionBox.endX - selectionBox.startX);
-      const height = Math.abs(selectionBox.endY - selectionBox.startY);
-
-      // 최소 크기 체크
-      if (width > 5 && height > 5) {
-        const selectionRect = new Konva.Rect({
-          name: "selection-box",
-          x,
-          y,
-          width,
-          height,
-          stroke: "#0096fd",
-          strokeWidth: 1,
-          dash: [5, 5],
-          fill: "rgba(0, 150, 253, 0.1)",
-        });
-
-        layerRef.current.add(selectionRect);
-        console.log("Selection box rendered:", { x, y, width, height });
-      }
-    }
-
-    layerRef.current.batchDraw();
-  }, [selectionBox, isClient]);
-
-  // PDF 이미지 렌더링
-  useEffect(() => {
-    if (!layerRef.current || !isClient || pdfPages.length === 0) return;
+    if (
+      !layerRef.current ||
+      !isClient ||
+      !isStageReady ||
+      pdfPages.length === 0
+    )
+      return;
 
     const currentPdfImage = pdfPages[currentPage];
     if (!currentPdfImage) return;
 
-    // 기존 PDF 이미지 제거
-    layerRef.current.find(".pdf-image").forEach((image) => image.destroy());
+    // Clear existing PDF images
+    const existingImages = layerRef.current.find(".pdf-image");
+    existingImages.forEach((image) => image.destroy());
 
     const stage = stageRef.current;
     if (!stage) return;
 
-    // 캔버스 크기에 맞게 이미지 스케일링
-    const maxWidth = stage.width() * 0.8;
-    const maxHeight = stage.height() * 0.8;
+    // Calculate scaling
+    const maxWidth = stage.width() * CONSTANTS.CANVAS.PDF_SCALE_FACTOR;
+    const maxHeight = stage.height() * CONSTANTS.CANVAS.PDF_SCALE_FACTOR;
 
     const scale = Math.min(
       maxWidth / currentPdfImage.width,
       maxHeight / currentPdfImage.height
     );
+
     const scaledWidth = currentPdfImage.width * scale;
     const scaledHeight = currentPdfImage.height * scale;
 
-    // 중앙 위치에 오프셋 적용
+    // Calculate position
     const centerX = (stage.width() - scaledWidth) / 2;
     const centerY = (stage.height() - scaledHeight) / 2;
     const x = centerX + pdfOffset.x;
     const y = centerY + pdfOffset.y;
 
-    // Konva Image 생성
+    // Create Konva image
     const konvaImage = new Konva.Image({
       name: "pdf-image",
       image: currentPdfImage,
@@ -561,32 +603,169 @@ const CanvasComponent: React.FC<CanvasComponentProps> = ({
       height: scaledHeight,
     });
 
-    // PDF 이미지를 맨 뒤로 보내기
     layerRef.current.add(konvaImage);
     konvaImage.moveToBottom();
 
-    // PDF 이미지 정보 전달
     onPdfImageChange(currentPdfImage);
-
     layerRef.current.batchDraw();
-  }, [pdfPages, currentPage, pdfOffset, isClient, onPdfImageChange]);
+  }, [
+    pdfPages,
+    currentPage,
+    pdfOffset,
+    isClient,
+    isStageReady,
+    onPdfImageChange,
+  ]);
 
-  if (!isClient) {
-    return (
-      <div className="w-full h-full flex items-center justify-center bg-white">
-        <div className="text-gray-500">캔버스 로딩 중...</div>
-      </div>
-    );
-  }
+  // Layer ordering
+  useEffect(() => {
+    if (!layerRef.current || !isClient || !isStageReady) return;
+
+    const layer = layerRef.current;
+
+    // Order: PDF -> Shapes -> Lines -> Selection Box -> Transformers
+    layer.find(".pdf-image").forEach((img) => img.moveToBottom());
+    layer.find(".shape").forEach((shape) => shape.moveToTop());
+    layer
+      .find(".drawing-line, .current-line")
+      .forEach((line) => line.moveToTop());
+    layer.find(".selection-box").forEach((box) => box.moveToTop());
+
+    if (transformerRef.current) transformerRef.current.moveToTop();
+    if (lineTransformerRef.current) lineTransformerRef.current.moveToTop();
+
+    layer.batchDraw();
+  }, [shapes, lines, isClient, isStageReady]);
+
+  // Initialize stage and layer
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setIsClient(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isClient) return;
+
+    const container = document.getElementById("canvas-container");
+    if (!container) return;
+
+    setIsContainerMounted(true);
+
+    const stage = new Konva.Stage({
+      container: "canvas-container",
+      width: container.clientWidth,
+      height: container.clientHeight,
+    });
+
+    const layer = new Konva.Layer();
+    stage.add(layer);
+
+    stageRef.current = stage;
+    layerRef.current = layer;
+
+    // Create transformers
+    const transformer = new Konva.Transformer({
+      rotateEnabled: true,
+      resizeEnabled: true,
+      keepRatio: false,
+      anchorFill: CONSTANTS.COLORS.WHITE,
+      anchorStrokeWidth: CONSTANTS.SIZES.SHAPE_STROKE,
+      rotateAnchorFill: CONSTANTS.COLORS.WHITE,
+      rotateAnchorStrokeWidth: CONSTANTS.SIZES.SHAPE_STROKE,
+    });
+
+    const lineTransformer = new Konva.Transformer({
+      rotateEnabled: true,
+      resizeEnabled: true,
+      keepRatio: false,
+      anchorFill: CONSTANTS.COLORS.WHITE,
+      anchorStrokeWidth: CONSTANTS.SIZES.LINE_STROKE,
+      rotateAnchorFill: CONSTANTS.COLORS.WHITE,
+      rotateAnchorStrokeWidth: CONSTANTS.SIZES.LINE_STROKE,
+    });
+
+    layer.add(transformer);
+    layer.add(lineTransformer);
+
+    transformerRef.current = transformer;
+    lineTransformerRef.current = lineTransformer;
+
+    setIsStageReady(true);
+
+    // Handle window resize
+    const handleResize = () => {
+      if (container && stage) {
+        stage.width(container.clientWidth);
+        stage.height(container.clientHeight);
+        stage.batchDraw();
+      }
+    };
+
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      stage.destroy();
+    };
+  }, [isClient]);
+
+  // Handle mouse events
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!stageRef.current || !layerRef.current) return;
+
+      const stage = stageRef.current;
+      const pos = stage.getPointerPosition();
+      if (!pos) return;
+
+      // Konva 이벤트 객체 생성
+      const konvaEvent = {
+        evt: e.nativeEvent,
+        target: stage,
+        currentTarget: stage,
+        type: "mousedown",
+        cancelBubble: false,
+        pointerId: 0,
+      } as unknown as Konva.KonvaEventObject<MouseEvent>;
+
+      onMouseDown(konvaEvent);
+    },
+    [onMouseDown]
+  );
+
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!stageRef.current || !layerRef.current) return;
+
+      const stage = stageRef.current;
+      const pos = stage.getPointerPosition();
+      if (!pos) return;
+
+      const mouseEvent = {
+        evt: e.nativeEvent,
+        target: stage,
+        currentTarget: stage,
+        type: "mousemove",
+        cancelBubble: false,
+        pointerId: 0,
+      } as unknown as Konva.KonvaEventObject<MouseEvent>;
+
+      onMouseMove(mouseEvent);
+    },
+    [onMouseMove]
+  );
+
+  const handleMouseUp = useCallback(() => {
+    onMouseUp();
+  }, [onMouseUp]);
 
   return (
     <div
-      ref={containerRef}
-      className="border border-gray-300 rounded-lg shadow-lg mx-auto bg-white"
-      style={{
-        width: window.innerWidth - 40,
-        height: window.innerHeight - 120,
-      }}
+      id="canvas-container"
+      className="w-full h-full bg-white border border-gray-300 rounded-lg overflow-hidden"
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
     />
   );
 };
