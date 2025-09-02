@@ -1,264 +1,106 @@
 //page.tsx
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useRef, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import axios from "axios";
+import dynamic from "next/dynamic";
+import useWhiteBoard from "@/components/WhiteBoard/WhiteBoard";
+import ToolBar from "@/components/WhiteBoard/ToolBar/ToolBar";
+
+// CanvasComponent를 SSR 없이 동적 임포트
+const CanvasComponent = dynamic(
+  () => import("@/components/WhiteBoard/CanvasComponent"),
+  {
+    ssr: false,
+  }
+);
 
 export default function WhiteboardPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const fileName = searchParams.get("fileName") || "제목 없음";
 
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [brushSize, setBrushSize] = useState(2);
-  const [brushColor, setBrushColor] = useState("#000000");
-  const [tool, setTool] = useState<"pen" | "eraser">("pen");
   const [isPdfLoading, setIsPdfLoading] = useState(false);
 
-  // PDF 이미지 정보를 저장할 ref
-  const pdfImageRef = useRef<{
-    image: HTMLImageElement;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  } | null>(null);
+  // WhiteBoard 훅 사용
+  const {
+    // 상태
+    lines,
+    currentLine,
+    shapes,
+    selectedShapeIds,
+    selectedLineIds = [], // 기본값 추가
+    selectionBox,
+    tool,
+    brushColor,
+    brushSize,
+    pdfPages,
+    currentPage,
+    pdfOffset,
 
-  // 모든 PDF 페이지 이미지를 저장할 state
-  const [pdfPages, setPdfPages] = useState<HTMLImageElement[]>([]);
-  const [currentPage, setCurrentPage] = useState(0);
+    // 히스토리 상태
+    canUndo,
+    canRedo,
 
-  // PDF 이미지 드래그 관련 상태
-  const [isDraggingPdf, setIsDraggingPdf] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-  const [pdfOffset, setPdfOffset] = useState({ x: 0, y: 0 });
+    // 이벤트 핸들러
+    handleMouseDown,
+    handleMouseMove,
+    handleMouseUp,
+    handleShapeClick,
+    handleLineClick = () => {}, // 기본값 추가
+    handleShapeDragEnd,
+    handleShapeTransformEnd,
+    handleSelectionBoxChange,
+    handlePdfImageChange,
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    // 액션 함수
+    addShape,
+    addText,
+    addImage,
+    deleteSelectedShapes,
+    clearCanvas,
+    resetPdfPosition,
+    undo,
+    redo,
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    // 상태 설정 함수
+    setTool,
+    setBrushColor,
+    setBrushSize,
+    setPdfPages,
+    setCurrentPage,
+  } = useWhiteBoard();
 
-    // 캔버스 크기 설정
-    const resizeCanvas = () => {
-      canvas.width = window.innerWidth - 40;
-      canvas.height = window.innerHeight - 120;
-
-      // 배경을 흰색으로 설정
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      // PDF 이미지가 있으면 다시 그리기
-      if (pdfImageRef.current) {
-        const { image } = pdfImageRef.current;
-        const scale = Math.min(
-          canvas.width / image.width,
-          canvas.height / image.height
-        );
-        const scaledWidth = image.width * scale;
-        const scaledHeight = image.height * scale;
-        const x = (canvas.width - scaledWidth) / 2;
-        const y = (canvas.height - scaledHeight) / 2;
-
-        // PDF 이미지 정보 업데이트
-        pdfImageRef.current = {
-          image,
-          x,
-          y,
-          width: scaledWidth,
-          height: scaledHeight,
-        };
-
-        // 이미지 다시 그리기
-        ctx.drawImage(image, x, y, scaledWidth, scaledHeight);
-      }
-    };
-
-    resizeCanvas();
-    window.addEventListener("resize", resizeCanvas);
-
-    return () => window.removeEventListener("resize", resizeCanvas);
-  }, []);
-
-  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    setIsDrawing(true);
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    ctx.lineWidth = tool === "eraser" ? brushSize * 3 : brushSize;
-    ctx.strokeStyle = tool === "eraser" ? "#ffffff" : brushColor;
-    ctx.lineCap = "round";
+  // ToolBar에서 사용할 추가 함수들
+  const handleUndo = () => {
+    undo();
   };
 
-  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing) return;
-
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    ctx.lineTo(x, y);
-    ctx.stroke();
+  const handleRedo = () => {
+    redo();
   };
 
-  const stopDrawing = () => {
-    setIsDrawing(false);
-  };
-
-  // 통합된 마우스 이벤트 핸들러
-  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    // PDF 이미지 드래그 처리
-    if (pdfImageRef.current) {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-
-      const rect = canvas.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
-
-      const { x, y, width, height } = pdfImageRef.current;
-
-      // PDF 이미지 영역 내에서 클릭했는지 확인
-      if (
-        mouseX >= x &&
-        mouseX <= x + width &&
-        mouseY >= y &&
-        mouseY <= y + height
-      ) {
-        setIsDraggingPdf(true);
-        setDragStart({ x: mouseX - x, y: mouseY - y });
-        e.preventDefault();
-        return;
-      }
-    }
-
-    // 그리기 시작
-    startDrawing(e);
-  };
-
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    // PDF 이미지 드래그 처리
-    if (isDraggingPdf && pdfImageRef.current) {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-
-      const rect = canvas.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
-
-      // 새로운 오프셋 계산
-      const newOffsetX =
-        mouseX - dragStart.x - (canvas.width - pdfImageRef.current.width) / 2;
-      const newOffsetY =
-        mouseY - dragStart.y - (canvas.height - pdfImageRef.current.height) / 2;
-
-      setPdfOffset({ x: newOffsetX, y: newOffsetY });
-
-      // 캔버스 다시 그리기
-      if (pdfPages[currentPage]) {
-        displayPageOnCanvas(pdfPages[currentPage]);
-      }
-      return;
-    }
-
-    // 그리기 처리
-    draw(e);
-  };
-
-  const handleMouseUp = () => {
-    setIsDraggingPdf(false);
-    stopDrawing();
-  };
-
-  // PDF 이미지 위치 초기화
-  const resetPdfPosition = () => {
-    setPdfOffset({ x: 0, y: 0 });
-    if (pdfPages[currentPage]) {
-      displayPageOnCanvas(pdfPages[currentPage]);
-    }
-  };
-
-  const clearCanvas = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const handleDuplicate = () => {
+    // 선택된 도형 복제 로직 (나중에 구현)
+    console.log("Duplicate");
   };
 
   const saveCanvas = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const link = document.createElement("a");
-    link.download = `${fileName}.png`;
-    link.href = canvas.toDataURL();
-    link.click();
+    // 캔버스 저장 로직은 CanvasComponent에서 처리
+    const canvas = document.querySelector("canvas");
+    if (canvas) {
+      const dataURL = canvas.toDataURL();
+      const link = document.createElement("a");
+      link.download = `${fileName}.png`;
+      link.href = dataURL;
+      link.click();
+    }
   };
 
   const handlePdfUpload = () => {
     fileInputRef.current?.click();
-  };
-
-  // 특정 페이지를 캔버스에 표시하는 함수
-  const displayPageOnCanvas = (img: HTMLImageElement) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    // 캔버스 크기에 맞게 이미지 스케일링 (더 작게 조정)
-    const maxWidth = canvas.width * 0.8; // 캔버스 너비의 80%
-    const maxHeight = canvas.height * 0.8; // 캔버스 높이의 80%
-
-    const scale = Math.min(maxWidth / img.width, maxHeight / img.height);
-    const scaledWidth = img.width * scale;
-    const scaledHeight = img.height * scale;
-
-    // 중앙 위치에 오프셋 적용
-    const centerX = (canvas.width - scaledWidth) / 2;
-    const centerY = (canvas.height - scaledHeight) / 2;
-    const x = centerX + pdfOffset.x;
-    const y = centerY + pdfOffset.y;
-
-    // 배경을 흰색으로 설정
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // 이미지 그리기
-    ctx.drawImage(img, x, y, scaledWidth, scaledHeight);
-
-    // PDF 이미지 정보 저장
-    pdfImageRef.current = {
-      image: img,
-      x,
-      y,
-      width: scaledWidth,
-      height: scaledHeight,
-    };
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -305,11 +147,6 @@ export default function WhiteboardPage() {
 
       setPdfPages(loadedImages);
       setCurrentPage(0); // 첫 번째 페이지부터 시작
-
-      // 첫 번째 페이지를 캔버스에 표시
-      if (loadedImages.length > 0) {
-        displayPageOnCanvas(loadedImages[0]);
-      }
     } catch (error) {
       console.error("PDF 업로드 오류:", error);
       if (axios.isAxiosError(error)) {
@@ -373,9 +210,7 @@ export default function WhiteboardPage() {
                 <button
                   onClick={() => {
                     if (currentPage > 0) {
-                      const newPage = currentPage - 1;
-                      setCurrentPage(newPage);
-                      displayPageOnCanvas(pdfPages[newPage]);
+                      setCurrentPage(currentPage - 1);
                     }
                   }}
                   disabled={currentPage === 0}
@@ -405,9 +240,7 @@ export default function WhiteboardPage() {
                 <button
                   onClick={() => {
                     if (currentPage < pdfPages.length - 1) {
-                      const newPage = currentPage + 1;
-                      setCurrentPage(newPage);
-                      displayPageOnCanvas(pdfPages[newPage]);
+                      setCurrentPage(currentPage + 1);
                     }
                   }}
                   disabled={currentPage === pdfPages.length - 1}
@@ -513,93 +346,119 @@ export default function WhiteboardPage() {
 
       {/* Toolbar */}
       <div className="bg-white shadow-sm border-b px-6 py-3">
-        <div className="flex items-center space-x-6">
-          {/* Tool Selection */}
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={() => setTool("pen")}
-              className={`p-2 rounded-lg ${
-                tool === "pen"
-                  ? "bg-blue-100 text-blue-600"
-                  : "text-gray-600 hover:text-gray-800"
-              }`}
-              title="펜"
-            >
-              <svg
-                className="w-5 h-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
-                />
-              </svg>
-            </button>
-            <button
-              onClick={() => setTool("eraser")}
-              className={`p-2 rounded-lg ${
-                tool === "eraser"
-                  ? "bg-blue-100 text-blue-600"
-                  : "text-gray-600 hover:text-gray-800"
-              }`}
-              title="지우개"
-            >
-              <svg
-                className="w-5 h-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                />
-              </svg>
-            </button>
+        <div className="flex items-center justify-between">
+          {/* 왼쪽 - ToolBar 컴포넌트 */}
+          <div className="flex items-center space-x-4">
+            <ToolBar
+              mode={tool}
+              setMode={(mode) => setTool(mode as "pen" | "eraser" | "select")}
+              handleUndo={handleUndo}
+              handleRedo={handleRedo}
+              handleDelete={deleteSelectedShapes}
+              handleDuplicate={handleDuplicate}
+              addShape={(type) => addShape(type)}
+              addText={addText}
+              addImage={addImage}
+              canUndo={canUndo}
+              canRedo={canRedo}
+            />
           </div>
 
-          {/* Brush Size */}
-          <div className="flex items-center space-x-2">
-            <span className="text-sm text-gray-600">브러시 크기:</span>
-            <input
-              type="range"
-              min="1"
-              max="20"
-              value={brushSize}
-              onChange={(e) => setBrushSize(Number(e.target.value))}
-              className="w-20"
-            />
-            <span className="text-sm text-gray-600 w-8">{brushSize}</span>
-          </div>
-
-          {/* Color Picker */}
-          <div className="flex items-center space-x-2">
-            <span className="text-sm text-gray-600">색상:</span>
-            <input
-              type="color"
-              value={brushColor}
-              onChange={(e) => setBrushColor(e.target.value)}
-              className="w-8 h-8 rounded border cursor-pointer"
-            />
+          {/* 오른쪽 - 추가 도구들 */}
+          <div className="flex items-center space-x-4">
+            {/* 선택된 도형 삭제 */}
+            {selectedShapeIds.length > 0 && (
+              <button
+                onClick={deleteSelectedShapes}
+                className="px-3 py-1 rounded bg-orange-500 text-white hover:bg-orange-600 text-sm"
+              >
+                선택 삭제 ({selectedShapeIds.length})
+              </button>
+            )}
           </div>
         </div>
       </div>
 
+      {/* 펜 툴 서브 툴바 */}
+      {tool === "pen" && (
+        <div className="bg-white shadow-sm border-b px-6 py-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-6">
+              {/* 브러시 크기 조절 */}
+              <div className="flex items-center space-x-2">
+                <span className="text-sm text-gray-600">브러시 크기:</span>
+                <div className="flex space-x-1">
+                  {[2, 5, 10, 15, 20].map((size) => (
+                    <button
+                      key={size}
+                      onClick={() => setBrushSize(size)}
+                      className={`px-2 py-1 rounded text-xs ${
+                        brushSize === size
+                          ? "bg-blue-100 text-blue-600 border border-blue-300"
+                          : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                      }`}
+                    >
+                      {size}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 색상 선택 */}
+              <div className="flex items-center space-x-2">
+                <span className="text-sm text-gray-600">색상:</span>
+                <div className="flex space-x-1">
+                  {[
+                    "#000000",
+                    "#FFFFFF",
+                    "#CF3F41",
+                    "#2D66CB",
+                    "#E6B649",
+                    "#479734",
+                  ].map((color) => (
+                    <button
+                      key={color}
+                      onClick={() => setBrushColor(color)}
+                      className={`w-6 h-6 rounded border-2 ${
+                        brushColor === color
+                          ? "border-blue-500 scale-110"
+                          : "border-gray-300 hover:border-gray-400"
+                      }`}
+                      style={{ backgroundColor: color }}
+                      title={color}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Canvas */}
       <div className="p-5">
-        <canvas
-          ref={canvasRef}
+        <CanvasComponent
+          lines={lines}
+          currentLine={currentLine}
+          shapes={shapes}
+          selectedShapeIds={selectedShapeIds}
+          selectedLineIds={selectedLineIds}
+          selectionBox={selectionBox}
+          tool={tool}
+          brushColor={brushColor}
+          brushSize={brushSize}
+          pdfPages={pdfPages}
+          currentPage={currentPage}
+          pdfOffset={pdfOffset}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={stopDrawing}
-          className="border border-gray-300 rounded-lg shadow-lg cursor-crosshair mx-auto"
+          onShapeClick={handleShapeClick}
+          onLineClick={handleLineClick}
+          onShapeDragEnd={handleShapeDragEnd}
+          onShapeTransformEnd={handleShapeTransformEnd}
+          onSelectionBoxChange={handleSelectionBoxChange}
+          onPdfImageChange={handlePdfImageChange}
         />
       </div>
     </div>

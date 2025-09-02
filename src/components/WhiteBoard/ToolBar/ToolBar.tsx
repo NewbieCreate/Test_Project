@@ -13,26 +13,20 @@ type ShapeType =
 interface ToolBarProps {
   mode: string;
   setMode(mode: string): void;
-  penColor: string;
-  setPenColor(color: string): void;
-  strokeWidth: number;
-  setStrokeWidth(width: number): void;
   handleUndo(): void;
   handleRedo(): void;
   handleDelete?: () => void;
   handleDuplicate?: () => void;
-  addShape?: (type: Exclude<ShapeType, "text">, x: number, y: number) => void;
+  addShape?: (type: Exclude<ShapeType, "text">) => void;
   addText?: (text: string, x: number, y: number) => void;
   addImage?: (imageSrc: string, x: number, y: number) => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
 }
 
 const ToolBar: React.FC<ToolBarProps> = ({
   mode,
   setMode,
-  penColor,
-  setPenColor,
-  strokeWidth,
-  setStrokeWidth,
   handleUndo,
   handleRedo,
   handleDelete,
@@ -40,22 +34,14 @@ const ToolBar: React.FC<ToolBarProps> = ({
   addShape,
   addText,
   addImage,
+  canUndo = false,
+  canRedo = false,
 }) => {
   const [activeButton, setActiveButton] = useState<string | null>(mode);
   const [textInput, setTextInput] = useState("");
   const [showTextInput, setShowTextInput] = useState(false);
   const [imageInput, setImageInput] = useState("");
   const [showImageInput, setShowImageInput] = useState(false);
-
-  const colorArray = [
-    "#000000",
-    "#FFFFFF",
-    "#CF3F41",
-    "#2D66CB",
-    "#E6B649",
-    "#479734",
-  ];
-  const strokeWidths = [5, 10, 15];
 
   const handleToolClick = (tool: string) => {
     // 액션 툴
@@ -64,10 +50,14 @@ const ToolBar: React.FC<ToolBarProps> = ({
     if (tool === "delete") return handleDelete?.();
     if (tool === "duplicate") return handleDuplicate?.();
 
-    setActiveButton(tool);
-    setMode(tool);
+    // 펜, 지우개, 선택 모드는 단순히 모드만 변경
+    if (["pen", "eraser", "select"].includes(tool)) {
+      setActiveButton(tool);
+      setMode(tool);
+      return;
+    }
 
-    // 도형 추가
+    // 도형 추가 (도형 툴 클릭 시)
     const shapeTools: Exclude<ShapeType, "text">[] = [
       "rectangle",
       "circle",
@@ -76,11 +66,10 @@ const ToolBar: React.FC<ToolBarProps> = ({
       "arrow",
     ];
     if (addShape && shapeTools.includes(tool as Exclude<ShapeType, "text">)) {
-      addShape(
-        tool as Exclude<ShapeType, "text">,
-        window.innerWidth / 2,
-        window.innerHeight / 2
-      );
+      addShape(tool as Exclude<ShapeType, "text">);
+      // 도형 추가 후 펜 모드로 돌아가기
+      setActiveButton("pen");
+      setMode("pen");
     }
 
     if (tool === "text") setShowTextInput(true);
@@ -108,136 +97,153 @@ const ToolBar: React.FC<ToolBarProps> = ({
   };
 
   return (
-    <div className="flex gap-2">
-      {/* 메인 툴바 */}
-      <div className="flex flex-col bg-white p-2 rounded shadow-lg w-[80px]">
-        {[
-          "pen",
-          "eraser",
-          "rectangle",
-          "circle",
-          "triangle",
-          "star",
-          "arrow",
-          "text",
-          "image",
-        ].map((tool) => (
+    <div className="flex items-center space-x-4">
+      {/* 메인 도구 버튼들 */}
+      <div className="flex items-center space-x-2">
+        {["pen", "eraser", "select"].map((tool) => (
           <button
             key={tool}
             onClick={() => handleToolClick(tool)}
-            className={`mb-1 p-2 rounded hover:bg-gray-200 ${
-              activeButton === tool ? "bg-blue-50" : ""
+            className={`px-3 py-2 rounded text-sm ${
+              activeButton === tool
+                ? "bg-blue-100 text-blue-600"
+                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
             }`}
           >
-            {tool}
-          </button>
-        ))}
-        {/* 액션 버튼 */}
-        {["undo", "redo", "delete", "duplicate"].map((tool) => (
-          <button
-            key={tool}
-            onClick={() => handleToolClick(tool)}
-            className="mb-1 p-2 rounded hover:bg-gray-200"
-          >
-            {tool}
+            {tool === "pen" ? "펜" : tool === "eraser" ? "지우개" : "선택"}
           </button>
         ))}
       </div>
 
-      {/* 펜 서브 패널 */}
-      {activeButton === "pen" && (
-        <div className="flex flex-col bg-white p-2 rounded shadow-lg">
-          <div className="mb-2">
-            <span>선 굵기</span>
-            <div className="flex gap-1 mt-1">
-              {strokeWidths.map((w) => (
-                <button
-                  key={w}
-                  onClick={() => setStrokeWidth(w)}
-                  className={`p-2 rounded ${
-                    strokeWidth === w ? "bg-blue-50" : ""
-                  }`}
-                >
-                  {w}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <span>색상</span>
-            <div className="flex gap-1 mt-1">
-              {colorArray.map((c) => (
-                <div
-                  key={c}
-                  onClick={() => setPenColor(c)}
-                  className={`w-6 h-6 rounded cursor-pointer border ${
-                    penColor === c ? "border-blue-500" : "border-gray-300"
-                  }`}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* 도형 버튼들 */}
+      <div className="flex items-center space-x-2">
+        <span className="text-sm text-gray-600 mr-2">도형:</span>
+        {(["rectangle", "circle", "triangle", "star"] as const).map((shape) => (
+          <button
+            key={shape}
+            onClick={() => handleToolClick(shape)}
+            className="px-3 py-2 rounded text-sm bg-gray-100 text-gray-700 hover:bg-gray-200"
+          >
+            {shape === "rectangle"
+              ? "□"
+              : shape === "circle"
+              ? "○"
+              : shape === "triangle"
+              ? "△"
+              : "★"}
+          </button>
+        ))}
+      </div>
+
+      {/* 액션 버튼들 */}
+      <div className="flex items-center space-x-2">
+        <button
+          onClick={() => handleToolClick("undo")}
+          disabled={!canUndo}
+          className={`px-3 py-2 rounded text-sm ${
+            canUndo
+              ? "bg-gray-100 text-gray-700 hover:bg-gray-200"
+              : "bg-gray-50 text-gray-400 cursor-not-allowed"
+          }`}
+        >
+          ↶
+        </button>
+        <button
+          onClick={() => handleToolClick("redo")}
+          disabled={!canRedo}
+          className={`px-3 py-2 rounded text-sm ${
+            canRedo
+              ? "bg-gray-100 text-gray-700 hover:bg-gray-200"
+              : "bg-gray-50 text-gray-400 cursor-not-allowed"
+          }`}
+        >
+          ↷
+        </button>
+        <button
+          onClick={() => handleToolClick("delete")}
+          className="px-3 py-2 rounded text-sm bg-gray-100 text-gray-700 hover:bg-gray-200"
+        >
+          삭제
+        </button>
+        <button
+          onClick={() => handleToolClick("duplicate")}
+          className="px-3 py-2 rounded text-sm bg-gray-100 text-gray-700 hover:bg-gray-200"
+        >
+          복제
+        </button>
+      </div>
+
+      {/* 텍스트/이미지 추가 버튼 */}
+      <div className="flex items-center space-x-2">
+        <button
+          onClick={() => handleToolClick("text")}
+          className="px-3 py-2 rounded text-sm bg-gray-100 text-gray-700 hover:bg-gray-200"
+        >
+          텍스트
+        </button>
+        <button
+          onClick={() => handleToolClick("image")}
+          className="px-3 py-2 rounded text-sm bg-gray-100 text-gray-700 hover:bg-gray-200"
+        >
+          이미지
+        </button>
+      </div>
 
       {/* 텍스트 입력 */}
       {showTextInput && (
-        <div className="flex flex-col bg-white p-2 rounded shadow-lg">
+        <div className="flex items-center space-x-2">
           <input
             value={textInput}
             onChange={(e) => setTextInput(e.target.value)}
             placeholder="텍스트 입력"
-            className="border p-1 rounded mb-1"
+            className="border p-1 rounded text-sm"
+            onKeyPress={(e) => e.key === "Enter" && handleTextSubmit()}
           />
-          <div className="flex gap-1">
-            <button
-              onClick={handleTextSubmit}
-              className="bg-blue-600 text-white px-2 py-1 rounded"
-            >
-              추가
-            </button>
-            <button
-              onClick={() => {
-                setShowTextInput(false);
-                setActiveButton("pen");
-                setMode("pen");
-              }}
-              className="bg-gray-500 text-white px-2 py-1 rounded"
-            >
-              취소
-            </button>
-          </div>
+          <button
+            onClick={handleTextSubmit}
+            className="bg-blue-600 text-white px-2 py-1 rounded text-sm"
+          >
+            추가
+          </button>
+          <button
+            onClick={() => {
+              setShowTextInput(false);
+              setActiveButton("pen");
+              setMode("pen");
+            }}
+            className="bg-gray-500 text-white px-2 py-1 rounded text-sm"
+          >
+            취소
+          </button>
         </div>
       )}
 
       {/* 이미지 입력 */}
       {showImageInput && (
-        <div className="flex flex-col bg-white p-2 rounded shadow-lg">
+        <div className="flex items-center space-x-2">
           <input
             value={imageInput}
             onChange={(e) => setImageInput(e.target.value)}
             placeholder="이미지 URL"
-            className="border p-1 rounded mb-1"
+            className="border p-1 rounded text-sm"
+            onKeyPress={(e) => e.key === "Enter" && handleImageSubmit()}
           />
-          <div className="flex gap-1">
-            <button
-              onClick={handleImageSubmit}
-              className="bg-blue-600 text-white px-2 py-1 rounded"
-            >
-              추가
-            </button>
-            <button
-              onClick={() => {
-                setShowImageInput(false);
-                setActiveButton("pen");
-                setMode("pen");
-              }}
-              className="bg-gray-500 text-white px-2 py-1 rounded"
-            >
-              취소
-            </button>
-          </div>
+          <button
+            onClick={handleImageSubmit}
+            className="bg-blue-600 text-white px-2 py-1 rounded text-sm"
+          >
+            추가
+          </button>
+          <button
+            onClick={() => {
+              setShowImageInput(false);
+              setActiveButton("pen");
+              setMode("pen");
+            }}
+            className="bg-gray-500 text-white px-2 py-1 rounded text-sm"
+          >
+            취소
+          </button>
         </div>
       )}
     </div>
